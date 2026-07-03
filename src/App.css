@@ -320,6 +320,85 @@ button.big {
   color: var(--text);
 }
 
+.mon-card.editing {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.level-editor {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  background: var(--accent-bg);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.level-editor input {
+  width: 4rem;
+  padding: 0.35rem 0.4rem;
+  text-align: center;
+}
+
+.level-editor button {
+  padding: 0.25rem 0.6rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.level-hint {
+  margin: 0;
+  font-weight: 400;
+  font-size: 0.78rem;
+}
+
+.move-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.move-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.move-slot select {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.9rem;
+}
+
+.slot-num {
+  width: 1.4rem;
+  height: 1.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.slot-empty {
+  font-size: 0.75rem;
+  color: var(--text);
+  width: 1.6rem;
+  text-align: center;
+}
+
+button.tiny {
+  padding: 0.25rem 0.45rem;
+  font-size: 0.8rem;
+}
+
 /* Combat view */
 .combat-wrap {
   display: flex;

@@ -4,12 +4,21 @@ export type MoveCategory = 'physical' | 'special' | 'status'
 
 export interface Move {
   name: string
+  slug: string // API name, used to match against the learnset
   type: string
   category: MoveCategory
   power: number | null
   accuracy: number | null
   priority: number
   levelLearned: number
+}
+
+// A move the Pokémon can learn in Gen IV, used to populate the move editor.
+export interface LearnsetEntry {
+  slug: string
+  display: string
+  level: number // level-up level; 0 for TM/HM, tutor, or egg moves
+  method: 'level-up' | 'machine' | 'tutor' | 'egg' | 'other'
 }
 
 export interface Stats {
@@ -32,6 +41,7 @@ export interface Pokemon {
   baseStats: Stats
   stats: Stats // computed at the given level
   moves: Move[]
+  learnset: LearnsetEntry[] // full Gen IV move pool, for editing
   slot: SlotKind // relevant for your own team; opponents are always 'party'
 }
 

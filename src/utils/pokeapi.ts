@@ -1,6 +1,13 @@
 // Loads a Pokémon from PokeAPI with its Gen IV (Platinum) level-up moveset and
 // stats scaled to a given level.
-import { type Move, type MoveCategory, type Pokemon, type SlotKind, type Stats } from '../data/pokemonData'
+import {
+  type LearnsetEntry,
+  type Move,
+  type MoveCategory,
+  type Pokemon,
+  type SlotKind,
+  type Stats,
+} from '../data/pokemonData'
 
 const API = 'https://pokeapi.co/api/v2'
 
@@ -187,6 +194,7 @@ async function loadMove(url: string, levelLearned: number): Promise<Move> {
   }
   return {
     name: cap(data.name),
+    slug: data.name,
     type: cap(data.type.name),
     category: data.damage_class.name,
     power: data.power,
@@ -194,6 +202,44 @@ async function loadMove(url: string, levelLearned: number): Promise<Move> {
     priority: data.priority,
     levelLearned,
   }
+}
+
+// Fetch a single move by its API slug (used when swapping moves in the editor).
+export async function loadMoveByName(slug: string, levelLearned = 0): Promise<Move> {
+  return loadMove(`${API}/move/${slug}`, levelLearned)
+}
+
+// Recompute a Pokémon's stats for a new level, keeping everything else.
+export function withLevel(pokemon: Pokemon, level: number): Pokemon {
+  const clamped = Math.min(100, Math.max(1, Math.round(level)))
+  return { ...pokemon, level: clamped, stats: computeStats(pokemon.baseStats, clamped) }
+}
+
+// Every move the Pokémon can learn in any Gen IV game, for the move editor.
+function buildLearnset(moves: RawMoveRef[]): LearnsetEntry[] {
+  const byMove = new Map<string, LearnsetEntry>()
+  for (const ref of moves) {
+    const gen4 = ref.version_group_details.filter((d) => GEN4_VERSION_GROUPS.includes(d.version_group.name))
+    if (gen4.length === 0) continue
+    // Prefer a level-up detail so we can show the level it's learned at.
+    const levelUp = gen4.find((d) => d.move_learn_method.name === 'level-up')
+    const detail = levelUp ?? gen4[0]
+    const rawMethod = detail.move_learn_method.name
+    const method: LearnsetEntry['method'] =
+      rawMethod === 'level-up' || rawMethod === 'machine' || rawMethod === 'tutor' || rawMethod === 'egg'
+        ? rawMethod
+        : 'other'
+    byMove.set(ref.move.name, {
+      slug: ref.move.name,
+      display: cap(ref.move.name),
+      level: levelUp ? levelUp.level_learned_at : 0,
+      method,
+    })
+  }
+  const methodOrder = { 'level-up': 0, machine: 1, tutor: 2, egg: 3, other: 4 }
+  return [...byMove.values()].sort(
+    (a, b) => methodOrder[a.method] - methodOrder[b.method] || a.level - b.level || a.display.localeCompare(b.display),
+  )
 }
 
 export async function loadPokemon(query: string, level: number, slot: SlotKind): Promise<Pokemon> {
@@ -236,6 +282,7 @@ export async function loadPokemon(query: string, level: number, slot: SlotKind):
     baseStats,
     stats: computeStats(baseStats, level),
     moves,
+    learnset: buildLearnset(data.moves),
     slot,
   }
 }

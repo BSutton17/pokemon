@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { type Pokemon, type SlotKind } from './data/pokemonData'
-import { fetchPokemonNames, loadPokemon, resolvePokemonName, suggestNames } from './utils/pokeapi'
+import {
+  fetchPokemonNames,
+  loadMoveByName,
+  loadPokemon,
+  resolvePokemonName,
+  suggestNames,
+  withLevel,
+} from './utils/pokeapi'
 import { analyzeBattle, analyzeMove, type MoveAnalysis } from './utils/damage'
 
 const PARTY_LIMIT = 6
@@ -53,19 +60,111 @@ function StatBar({ label, value }: { label: string; value: number }) {
   )
 }
 
+const METHOD_LABELS: Record<string, string> = {
+  'level-up': 'Level-up',
+  machine: 'TM / HM',
+  tutor: 'Move Tutor',
+  egg: 'Egg Move',
+  other: 'Other',
+}
+
+function MoveEditor({
+  pokemon,
+  onSetMove,
+  onRemoveMove,
+  pendingSlot,
+}: {
+  pokemon: Pokemon
+  onSetMove: (slotIndex: number, slug: string) => void
+  onRemoveMove: (slotIndex: number) => void
+  pendingSlot: number | null
+}) {
+  const known = new Set(pokemon.moves.map((m) => m.slug))
+  const learnset = pokemon.learnset ?? []
+
+  // Group the pool by learn method for the dropdown, hiding already-known moves.
+  const grouped = learnset.reduce<Record<string, typeof learnset>>((acc, entry) => {
+    if (known.has(entry.slug)) return acc
+    ;(acc[entry.method] ??= []).push(entry)
+    return acc
+  }, {})
+
+  function renderOptions() {
+    return Object.entries(grouped).map(([method, entries]) => (
+      <optgroup key={method} label={METHOD_LABELS[method] ?? method}>
+        {entries.map((entry) => (
+          <option key={entry.slug} value={entry.slug}>
+            {entry.display}
+            {entry.method === 'level-up' && entry.level > 0 ? ` (Lv ${entry.level})` : ''}
+          </option>
+        ))}
+      </optgroup>
+    ))
+  }
+
+  const slots = [0, 1, 2, 3]
+
+  return (
+    <div className="move-editor">
+      {learnset.length === 0 ? (
+        <p className="hint">Re-add this Pokémon to load its editable move pool.</p>
+      ) : (
+        slots.map((index) => {
+          const move = pokemon.moves[index]
+          const busy = pendingSlot === index
+          return (
+            <div className="move-slot" key={index}>
+              <span className="slot-num">{index + 1}</span>
+              <select
+                value=""
+                disabled={busy}
+                onChange={(e) => {
+                  if (e.target.value) onSetMove(index, e.target.value)
+                }}
+              >
+                <option value="">{busy ? 'Loading…' : move ? `Change ${move.name}…` : 'Add a move…'}</option>
+                {renderOptions()}
+              </select>
+              {move ? (
+                <button type="button" className="ghost danger tiny" onClick={() => onRemoveMove(index)}>
+                  ✕
+                </button>
+              ) : (
+                <span className="slot-empty">empty</span>
+              )}
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
+}
+
 function PokemonCard({
   pokemon,
   onRemove,
   onMove,
   moveLabel,
+  editable,
+  onLevelChange,
+  onSetMove,
+  onRemoveMove,
+  pendingSlot,
 }: {
   pokemon: Pokemon
   onRemove: () => void
   onMove?: () => void
   moveLabel?: string
+  editable?: boolean
+  onLevelChange?: (level: number) => void
+  onSetMove?: (slotIndex: number, slug: string) => void
+  onRemoveMove?: (slotIndex: number) => void
+  pendingSlot?: number | null
 }) {
+  const [editing, setEditing] = useState(false)
+
   return (
-    <article className="mon-card">
+    <article className={`mon-card${editing ? ' editing' : ''}`}>
       <div className="mon-head">
         <div>
           <h3>
@@ -80,6 +179,11 @@ function PokemonCard({
           </div>
         </div>
         <div className="mon-actions">
+          {editable ? (
+            <button type="button" className="ghost" onClick={() => setEditing((v) => !v)}>
+              {editing ? 'Done' : 'Edit'}
+            </button>
+          ) : null}
           {onMove && moveLabel ? (
             <button type="button" className="ghost" onClick={onMove}>
               {moveLabel}
@@ -91,6 +195,26 @@ function PokemonCard({
         </div>
       </div>
 
+      {editing && onLevelChange ? (
+        <div className="level-editor">
+          <span>Level</span>
+          <button type="button" className="ghost" onClick={() => onLevelChange(pokemon.level - 1)}>
+            −
+          </button>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={pokemon.level}
+            onChange={(e) => onLevelChange(Number(e.target.value) || 1)}
+          />
+          <button type="button" className="ghost" onClick={() => onLevelChange(pokemon.level + 1)}>
+            +
+          </button>
+          <span className="hint level-hint">Stats update automatically.</span>
+        </div>
+      ) : null}
+
       <div className="stat-grid">
         <StatBar label="HP" value={pokemon.stats.hp} />
         <StatBar label="Atk" value={pokemon.stats.attack} />
@@ -100,20 +224,27 @@ function PokemonCard({
         <StatBar label="Spe" value={pokemon.stats.speed} />
       </div>
 
-      <div className="mon-moves">
-        {pokemon.moves.length === 0 ? (
-          <span className="hint">No Gen IV level-up moves at this level.</span>
-        ) : (
-          pokemon.moves.map((move) => (
-            <span key={move.name} className={`move-chip type-${move.type.toLowerCase()}`}>
-              {move.name}
-              <small>
-                {move.category === 'status' ? 'Status' : `${move.power ?? '—'} pow`}
-              </small>
-            </span>
-          ))
-        )}
-      </div>
+      {editing && onSetMove && onRemoveMove ? (
+        <MoveEditor
+          pokemon={pokemon}
+          onSetMove={onSetMove}
+          onRemoveMove={onRemoveMove}
+          pendingSlot={pendingSlot ?? null}
+        />
+      ) : (
+        <div className="mon-moves">
+          {pokemon.moves.length === 0 ? (
+            <span className="hint">No Gen IV level-up moves at this level.</span>
+          ) : (
+            pokemon.moves.map((move) => (
+              <span key={move.slug ?? move.name} className={`move-chip type-${move.type.toLowerCase()}`}>
+                {move.name}
+                <small>{move.category === 'status' ? 'Status' : `${move.power ?? '—'} pow`}</small>
+              </span>
+            ))
+          )}
+        </div>
+      )}
       {pokemon.abilities.length > 0 ? (
         <p className="ability-line">Ability: {pokemon.abilities.join(' / ')}</p>
       ) : null}
@@ -145,6 +276,7 @@ function App() {
   const [combatMode, setCombatMode] = useState(false)
   const [activeId, setActiveId] = useState('')
   const [oppActiveId, setOppActiveId] = useState('')
+  const [pending, setPending] = useState<{ id: string; slot: number } | null>(null)
 
   // Persist only the player's team (party + backpack), not opponents.
   useEffect(() => {
@@ -234,6 +366,43 @@ function App() {
     if (!mon) return
     setBackpack((current) => current.filter((entry) => entry.id !== id))
     setParty((current) => [...current, { ...mon, slot: 'party' }])
+  }
+
+  // Apply an update to whichever of my lists (party/backpack) holds this mon.
+  function updateMyPokemon(id: string, updater: (mon: Pokemon) => Pokemon) {
+    setParty((current) => current.map((mon) => (mon.id === id ? updater(mon) : mon)))
+    setBackpack((current) => current.map((mon) => (mon.id === id ? updater(mon) : mon)))
+  }
+
+  function changeLevel(id: string, level: number) {
+    updateMyPokemon(id, (mon) => withLevel(mon, level))
+  }
+
+  async function setSlotMove(id: string, slotIndex: number, slug: string) {
+    const mon = [...party, ...backpack].find((entry) => entry.id === id)
+    if (!mon) return
+    const entry = mon.learnset?.find((item) => item.slug === slug)
+    setPending({ id, slot: slotIndex })
+    try {
+      const move = await loadMoveByName(slug, entry?.level ?? 0)
+      updateMyPokemon(id, (current) => {
+        const moves = [...current.moves]
+        if (slotIndex < moves.length) moves[slotIndex] = move
+        else moves.push(move)
+        return { ...current, moves }
+      })
+    } catch {
+      setTeamError(`Couldn't load ${prettyName(slug)}.`)
+    } finally {
+      setPending(null)
+    }
+  }
+
+  function removeSlotMove(id: string, slotIndex: number) {
+    updateMyPokemon(id, (mon) => ({
+      ...mon,
+      moves: mon.moves.filter((_, index) => index !== slotIndex),
+    }))
   }
 
   function clearTeam() {
@@ -429,6 +598,11 @@ function App() {
                     onRemove={() => setParty((c) => c.filter((e) => e.id !== mon.id))}
                     onMove={() => moveToBackpack(mon.id)}
                     moveLabel="→ Backpack"
+                    editable
+                    onLevelChange={(level) => changeLevel(mon.id, level)}
+                    onSetMove={(slot, slug) => setSlotMove(mon.id, slot, slug)}
+                    onRemoveMove={(slot) => removeSlotMove(mon.id, slot)}
+                    pendingSlot={pending?.id === mon.id ? pending.slot : null}
                   />
                 ))}
               </div>
@@ -448,6 +622,11 @@ function App() {
                     onRemove={() => setBackpack((c) => c.filter((e) => e.id !== mon.id))}
                     onMove={() => moveToParty(mon.id)}
                     moveLabel="→ Party"
+                    editable
+                    onLevelChange={(level) => changeLevel(mon.id, level)}
+                    onSetMove={(slot, slug) => setSlotMove(mon.id, slot, slug)}
+                    onRemoveMove={(slot) => removeSlotMove(mon.id, slot)}
+                    pendingSlot={pending?.id === mon.id ? pending.slot : null}
                   />
                 ))}
               </div>
