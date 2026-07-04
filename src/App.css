@@ -505,6 +505,19 @@ button.tiny {
   color: var(--text);
 }
 
+/* Keep the move name and its description visually grouped. */
+.move-table tr.has-desc > td {
+  border-bottom: none;
+  padding-bottom: 0.2rem;
+}
+
+.move-table tr.desc-row td {
+  padding-top: 0;
+  font-size: 0.82rem;
+  color: var(--text);
+  font-style: italic;
+}
+
 .move-tags {
   display: flex;
   gap: 0.3rem;

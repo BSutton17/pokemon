@@ -181,17 +181,38 @@ function gen4LevelUpDetail(refs: RawMoveRef['version_group_details']) {
   return candidates[0]
 }
 
+interface RawMoveDetail {
+  name: string
+  type: { name: string }
+  damage_class: { name: MoveCategory }
+  power: number | null
+  accuracy: number | null
+  priority: number
+  effect_chance: number | null
+  effect_entries: { short_effect: string; language: { name: string } }[]
+  flavor_text_entries: { flavor_text: string; language: { name: string }; version_group: { name: string } }[]
+}
+
+// One-sentence description: prefer the Gen IV in-game flavor text, then any
+// English flavor text, then the mechanical short effect.
+function moveDescription(data: RawMoveDetail): string {
+  const clean = (text: string) => text.replace(/[\n\f\r]+/g, ' ').replace(/\s+/g, ' ').trim()
+
+  const english = data.flavor_text_entries.filter((entry) => entry.language.name === 'en')
+  const gen4 = english.find((entry) => GEN4_VERSION_GROUPS.includes(entry.version_group.name))
+  const flavor = (gen4 ?? english[0])?.flavor_text
+  if (flavor) return clean(flavor)
+
+  const effect = data.effect_entries.find((entry) => entry.language.name === 'en')?.short_effect
+  if (effect) return clean(effect).replace('$effect_chance', String(data.effect_chance ?? ''))
+
+  return ''
+}
+
 async function loadMove(url: string, levelLearned: number): Promise<Move> {
   const res = await fetch(url)
   if (!res.ok) throw new Error('Move lookup failed.')
-  const data = (await res.json()) as {
-    name: string
-    type: { name: string }
-    damage_class: { name: MoveCategory }
-    power: number | null
-    accuracy: number | null
-    priority: number
-  }
+  const data = (await res.json()) as RawMoveDetail
   return {
     name: cap(data.name),
     slug: data.name,
@@ -201,6 +222,7 @@ async function loadMove(url: string, levelLearned: number): Promise<Move> {
     accuracy: data.accuracy,
     priority: data.priority,
     levelLearned,
+    description: moveDescription(data),
   }
 }
 

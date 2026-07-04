@@ -679,24 +679,31 @@ function MoveRow({ analysis }: { analysis: MoveAnalysis }) {
   const { move } = analysis
   const isStatus = move.category === 'status' || !move.power
   return (
-    <tr>
-      <td>
-        <strong>{move.name}</strong>
-        <div className="move-tags">
-          <span className={`type-chip small type-${move.type.toLowerCase()}`}>{move.type}</span>
-          {analysis.stab ? <span className="tag">STAB</span> : null}
-        </div>
-      </td>
-      <td className="mono">{isStatus ? 'Status' : `${move.power}`}</td>
-      <td className="mono">{move.accuracy ?? '—'}</td>
-      <td className={effClass(analysis.effectiveness)}>{effectivenessLabel(analysis.effectiveness)}</td>
-      <td className="mono">
-        {isStatus ? '—' : `${Math.round(analysis.minPercent)}–${Math.round(analysis.maxPercent)}%`}
-      </td>
-      <td>
-        <span className={`ko ${analysis.ko === 'No damage' ? 'eff-none' : ''}`}>{analysis.ko}</span>
-      </td>
-    </tr>
+    <>
+      <tr className={move.description ? 'has-desc' : ''}>
+        <td>
+          <strong>{move.name}</strong>
+          <div className="move-tags">
+            <span className={`type-chip small type-${move.type.toLowerCase()}`}>{move.type}</span>
+            {analysis.stab ? <span className="tag">STAB</span> : null}
+          </div>
+        </td>
+        <td className="mono">{isStatus ? 'Status' : `${move.power}`}</td>
+        <td className="mono">{move.accuracy ?? '—'}</td>
+        <td className={effClass(analysis.effectiveness)}>{effectivenessLabel(analysis.effectiveness)}</td>
+        <td className="mono">
+          {isStatus ? '—' : `${Math.round(analysis.minPercent)}–${Math.round(analysis.maxPercent)}%`}
+        </td>
+        <td>
+          <span className={`ko ${analysis.ko === 'No damage' ? 'eff-none' : ''}`}>{analysis.ko}</span>
+        </td>
+      </tr>
+      {move.description ? (
+        <tr className="desc-row">
+          <td colSpan={6}>{move.description}</td>
+        </tr>
+      ) : null}
+    </>
   )
 }
 

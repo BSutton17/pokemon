@@ -11,6 +11,7 @@ export interface Move {
   accuracy: number | null
   priority: number
   levelLearned: number
+  description: string // one-sentence summary of what the move does
 }
 
 // A move the Pokémon can learn in Gen IV, used to populate the move editor.
