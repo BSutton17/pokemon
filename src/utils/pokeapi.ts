@@ -193,20 +193,29 @@ interface RawMoveDetail {
   flavor_text_entries: { flavor_text: string; language: { name: string }; version_group: { name: string } }[]
 }
 
-// One-sentence description: prefer the Gen IV in-game flavor text, then any
-// English flavor text, then the mechanical short effect.
+// One-sentence description: the Gen IV in-game flavor text or the mechanical
+// short effect, whichever is shorter (falling back to whichever exists).
 function moveDescription(data: RawMoveDetail): string {
   const clean = (text: string) => text.replace(/[\n\f\r]+/g, ' ').replace(/\s+/g, ' ').trim()
 
   const english = data.flavor_text_entries.filter((entry) => entry.language.name === 'en')
   const gen4 = english.find((entry) => GEN4_VERSION_GROUPS.includes(entry.version_group.name))
-  const flavor = (gen4 ?? english[0])?.flavor_text
-  if (flavor) return clean(flavor)
+  const flavor = clean((gen4 ?? english[0])?.flavor_text ?? '')
 
-  const effect = data.effect_entries.find((entry) => entry.language.name === 'en')?.short_effect
-  if (effect) return clean(effect).replace('$effect_chance', String(data.effect_chance ?? ''))
+  const rawEffect = data.effect_entries.find((entry) => entry.language.name === 'en')?.short_effect
+  const effect = rawEffect
+    ? clean(rawEffect)
+        // Fill in the chance placeholder, or drop it (and its %) if unknown.
+        .replace(/\$effect_chance%/g, data.effect_chance != null ? `${data.effect_chance}%` : '')
+        .replace(/\$effect_chance/g, data.effect_chance != null ? `${data.effect_chance}` : '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : ''
 
-  return ''
+  // Use whichever description is shorter, ignoring any that are empty.
+  const options = [flavor, effect].filter(Boolean)
+  if (options.length === 0) return ''
+  return options.sort((a, b) => a.length - b.length)[0]
 }
 
 async function loadMove(url: string, levelLearned: number): Promise<Move> {
