@@ -80,16 +80,13 @@ function bestDamagingMove(attacker: Pokemon, defender: Pokemon): MoveAnalysis | 
   return damaging[0] ?? null
 }
 
-// Defensive risk of staying in: how big a chunk the opponent's best move takes.
-function incomingRisk(attacker: Pokemon, defender: Pokemon): number {
-  const threat = bestDamagingMove(defender, attacker)
-  return threat ? threat.expectedPercent : 0
-}
-
 export interface SwitchSuggestion {
   name: string
   offense: number
   risk: number
+  offensiveEff: number // your best move's effectiveness vs the opponent
+  defensiveEff: number // opponent's best move's effectiveness vs this mon
+  outspeed: boolean
   reason: string
 }
 
@@ -102,11 +99,33 @@ export interface BattleAdvice {
   incomingThreat: MoveAnalysis | null
   switchSuggestion: SwitchSuggestion | null
   headline: string
-  reasoning: string[]
+  speedLine: string
+  bestMoveLine: string
+  strategyLine: string
+  threatLine: string
 }
 
-function matchupScore(offense: number, risk: number, outspeed: boolean): number {
-  return offense - risk * 0.6 + (outspeed ? 12 : 0)
+// Score a matchup. Raw damage/risk plus explicit bonuses for a type advantage
+// (super-effective offense, resisted/immune defense) so a benched Pokémon with
+// a clear type edge is favoured even when the current mon isn't in danger.
+function matchupScore(
+  offense: number,
+  risk: number,
+  outspeed: boolean,
+  offEff: number,
+  defEff: number,
+): number {
+  const offBonus = offEff === 0 ? -30 : offEff >= 2 ? 15 : offEff > 1 ? 8 : offEff < 1 ? -8 : 0
+  const defBonus = defEff === 0 ? 25 : defEff < 1 ? 12 : defEff > 1 ? -10 : 0
+  return offense - risk * 0.6 + (outspeed ? 12 : 0) + offBonus + defBonus
+}
+
+function effWord(eff: number): string {
+  if (eff === 0) return 'no effect'
+  if (eff >= 4) return '4× super effective'
+  if (eff > 1) return 'super effective'
+  if (eff < 1) return 'not very effective'
+  return 'neutral'
 }
 
 export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokemon[]): BattleAdvice {
@@ -123,86 +142,107 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
 
   const incomingThreat = bestDamagingMove(defender, attacker)
   const risk = incomingThreat ? incomingThreat.expectedPercent : 0
-  const currentScore = matchupScore(bestMove?.expectedPercent ?? 0, risk, outspeed)
+  const myOffEff = bestMove?.effectiveness ?? 0
+  const myDefEff = incomingThreat?.effectiveness ?? 1
+  const currentScore = matchupScore(bestMove?.expectedPercent ?? 0, risk, outspeed, myOffEff, myDefEff)
 
-  // Look for a party member with a clearly better matchup.
+  // Look for a party member with a clearly better matchup — a type advantage
+  // (super-effective offense and/or resisting the opponent) is weighted heavily.
   let switchSuggestion: SwitchSuggestion | null = null
-  let bestAlt = currentScore + 20 // require a meaningful margin to recommend a swap
+  let bestAlt = currentScore + 15 // require a meaningful margin to recommend a swap
   for (const mate of party) {
     if (mate.id === attacker.id) continue
     const mateBest = bestDamagingMove(mate, defender)
+    const oppVsMate = bestDamagingMove(defender, mate)
     const mateOffense = mateBest?.expectedPercent ?? 0
-    const mateRisk = incomingRisk(mate, defender)
+    const mateRisk = oppVsMate?.expectedPercent ?? 0
+    const mateOffEff = mateBest?.effectiveness ?? 0
+    const mateDefEff = oppVsMate?.effectiveness ?? 1
     const mateOutspeed = mate.stats.speed > opponentSpeed
-    const score = matchupScore(mateOffense, mateRisk, mateOutspeed)
+    const score = matchupScore(mateOffense, mateRisk, mateOutspeed, mateOffEff, mateDefEff)
     if (score > bestAlt) {
       bestAlt = score
+
+      // Explain the type advantage in plain terms.
+      const offPart = mateBest
+        ? mateOffEff > 1
+          ? `${mate.name}'s ${mateBest.move.name} is ${effWord(mateOffEff)} (~${Math.round(mateOffense)}%)`
+          : `${mate.name} hits for ~${Math.round(mateOffense)}% with ${mateBest.move.name}`
+        : `${mate.name} is a better fit`
+      const defPart =
+        mateDefEff === 0
+          ? `, and is immune to ${defender.name}'s best move`
+          : mateDefEff < 1
+            ? `, and resists it (only ~${Math.round(mateRisk)}% taken)`
+            : `, taking ~${Math.round(mateRisk)}% back`
+      const speedPart = mateOutspeed ? ', and outspeeds' : ''
+
       switchSuggestion = {
         name: mate.name,
         offense: mateOffense,
         risk: mateRisk,
-        reason:
-          `${mate.name} ${mateOutspeed ? 'outspeeds and ' : ''}hits for ~${Math.round(mateOffense)}% ` +
-          `while taking ~${Math.round(mateRisk)}% back` +
-          (mateBest ? ` with ${mateBest.move.name}` : ''),
+        offensiveEff: mateOffEff,
+        defensiveEff: mateDefEff,
+        outspeed: mateOutspeed,
+        reason: `${offPart}${defPart}${speedPart}`,
       }
     }
   }
 
-  // Build the headline + reasoning.
-  const reasoning: string[] = []
-  reasoning.push(
-    fasterSide === 'you'
-      ? `You outspeed (${yourSpeed} vs ${opponentSpeed}) — you move first.`
-      : fasterSide === 'opponent'
-        ? `Opponent is faster (${opponentSpeed} vs ${yourSpeed}) — they move first.`
-        : `Speed tie (${yourSpeed}) — coin flip on who moves first.`,
-  )
-
-  if (bestMove) {
-    const eff =
-      bestMove.effectiveness > 1
-        ? 'super effective'
-        : bestMove.effectiveness < 1
-          ? bestMove.effectiveness === 0
-            ? 'no effect'
-            : 'not very effective'
-          : 'neutral'
-    reasoning.push(
-      `${bestMove.move.name} is your top damage: ~${Math.round(bestMove.minPercent)}–${Math.round(
-        bestMove.maxPercent,
-      )}% (${eff}${bestMove.stab ? ', STAB' : ''}) → ${bestMove.ko}.`,
-    )
-  } else {
-    reasoning.push('No damaging move connects — use a status move or switch.')
-  }
-
-  if (incomingThreat) {
-    reasoning.push(
-      `Biggest incoming hit: ${incomingThreat.move.name} for ~${Math.round(
-        incomingThreat.minPercent,
-      )}–${Math.round(incomingThreat.maxPercent)}% (${incomingThreat.ko} on you).`,
-    )
-  }
-
-  let headline: string
   const canOhko = bestMove?.ko === 'Guaranteed OHKO' || bestMove?.ko === 'Possible OHKO'
   const threatenedOhko = incomingThreat?.ko === 'Guaranteed OHKO' || incomingThreat?.ko === 'Possible OHKO'
 
-  if (switchSuggestion && (threatenedOhko || (bestMove?.expectedPercent ?? 0) < 20)) {
+  const speedLine =
+    fasterSide === 'you'
+      ? `You're faster (${yourSpeed} vs ${opponentSpeed}) — you move first.`
+      : fasterSide === 'opponent'
+        ? `They're faster (${opponentSpeed} vs ${yourSpeed}) — they move first.`
+        : `Speed tie at ${yourSpeed} — 50/50 who moves first.`
+
+  const bestMoveLine = bestMove
+    ? `${bestMove.move.name}: ~${Math.round(bestMove.minPercent)}–${Math.round(bestMove.maxPercent)}% (${effWord(
+        bestMove.effectiveness,
+      )}${bestMove.stab ? ', STAB' : ''}) → ${bestMove.ko}.`
+    : `No damaging move lands on ${defender.name}.`
+
+  const threatLine = incomingThreat
+    ? `${incomingThreat.move.name}: ~${Math.round(incomingThreat.minPercent)}–${Math.round(
+        incomingThreat.maxPercent,
+      )}% (${effWord(incomingThreat.effectiveness)}) → ${incomingThreat.ko} on you.`
+    : `${defender.name} has no damaging move that lands on you.`
+
+  // Overall strategy: switch vs stay, with the reason spelled out.
+  let headline: string
+  let strategyLine: string
+
+  if (switchSuggestion) {
+    const disadvantage =
+      myOffEff === 0
+        ? `${attacker.name} can't damage ${defender.name}`
+        : myOffEff < 1
+          ? `${attacker.name}'s attacks are resisted here`
+          : myDefEff > 1
+            ? `${attacker.name} is weak to ${defender.name}`
+            : threatenedOhko
+              ? `${attacker.name} risks being knocked out`
+              : `a benched Pokémon has a stronger type matchup`
     headline = `Switch to ${switchSuggestion.name}`
-    reasoning.push(`Better option available: ${switchSuggestion.reason}.`)
-  } else if (bestMove && canOhko && outspeed) {
-    headline = `Attack with ${bestMove.move.name} — you should KO first`
-  } else if (bestMove && canOhko && threatenedOhko) {
-    headline = `Race: use ${bestMove.move.name}, but they can KO you back`
-    reasoning.push('You lose the speed race, so this is a risk — a switch may be safer.')
-  } else if (bestMove) {
-    headline = `Attack with ${bestMove.move.name}`
-  } else if (switchSuggestion) {
-    headline = `Switch to ${switchSuggestion.name}`
-  } else {
+    strategyLine = `Switch out — ${disadvantage}. ${switchSuggestion.reason}.`
+  } else if (!bestMove) {
     headline = 'Use a status move or stall'
+    strategyLine = `${attacker.name} can't deal damage and no better switch is on the bench — use a status move or stall.`
+  } else if (canOhko && outspeed) {
+    headline = `Attack with ${bestMove.move.name}`
+    strategyLine = `Stay in — you outspeed and ${bestMove.move.name} should KO before ${defender.name} can act.`
+  } else if (canOhko && threatenedOhko && !outspeed) {
+    headline = `Risky race with ${bestMove.move.name}`
+    strategyLine = `Close race — ${bestMove.move.name} can KO, but ${defender.name} moves first and can KO you. No safer switch is available, so weigh the risk.`
+  } else if (threatenedOhko && !outspeed) {
+    headline = `Attack with ${bestMove.move.name} under pressure`
+    strategyLine = `${defender.name} moves first and can KO you — hit hard with ${bestMove.move.name} or take a defensive switch if you have one.`
+  } else {
+    headline = `Attack with ${bestMove.move.name}`
+    strategyLine = `Stay in and attack with ${bestMove.move.name} — it's your strongest available play and you're not in KO range.`
   }
 
   return {
@@ -214,6 +254,9 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
     incomingThreat,
     switchSuggestion,
     headline,
-    reasoning,
+    speedLine,
+    bestMoveLine,
+    strategyLine,
+    threatLine,
   }
 }

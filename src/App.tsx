@@ -756,17 +756,24 @@ function CombatView({
       <section className="panel advice-panel">
         <p className="eyebrow">Recommended play</p>
         <h2 className="headline">{advice.headline}</h2>
-        <ul className="reason-list">
-          {advice.reasoning.map((line, index) => (
-            <li key={index}>{line}</li>
-          ))}
-        </ul>
-        {advice.switchSuggestion ? (
-          <p className="switch-note">
-            🔄 Alternative: switch to <strong>{advice.switchSuggestion.name}</strong> —{' '}
-            {advice.switchSuggestion.reason}.
-          </p>
-        ) : null}
+        <div className="advice-lines">
+          <div className="advice-line">
+            <span className="advice-label">Speed</span>
+            <p>{advice.speedLine}</p>
+          </div>
+          <div className="advice-line">
+            <span className="advice-label">My best move</span>
+            <p>{advice.bestMoveLine}</p>
+          </div>
+          <div className={`advice-line strategy${advice.switchSuggestion ? ' switch' : ''}`}>
+            <span className="advice-label">Overall strategy</span>
+            <p>{advice.strategyLine}</p>
+          </div>
+          <div className="advice-line">
+            <span className="advice-label">Their best move</span>
+            <p>{advice.threatLine}</p>
+          </div>
+        </div>
       </section>
 
       <section className="panel">
