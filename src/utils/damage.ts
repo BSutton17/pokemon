@@ -263,9 +263,12 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
       reason: alt.reason.replace(new RegExp(`^${alt.name}('s)? ?`), ''),
     }))
 
+  // The single best benched matchup. A tiny epsilon avoids flip-flopping between
+  // essentially-equal Pokémon; anything clearly better than the active is flagged
+  // so that only the strongest option is ever told to "stay in".
   const top = alternatives[0]
   const switchSuggestion: SwitchSuggestion | null =
-    top && top.score > currentScore + 15
+    top && top.score > currentScore + 1
       ? {
           name: top.name,
           offense: top.offense,
@@ -311,38 +314,110 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
       )}% (${effWord(incomingThreat.effectiveness)}) → ${incomingThreat.ko} on you.`
     : `${defender.name} has no damaging move that lands on you.`
 
-  // Overall strategy: switch vs stay, with the reason spelled out.
+  // Decide whether the active Pokémon is actually the play. Only stay in if it's
+  // the best matchup on the team, or if it simply wins this turn (KO + outspeed).
+  const guaranteedOhko = bestMove?.ko === 'Guaranteed OHKO'
+  const twoHKO = bestMove?.ko === 'Guaranteed 2HKO'
+  const theyTwoHKO = incomingThreat?.ko === 'Guaranteed 2HKO'
+  const winningNow = !!bestMove && outspeed && guaranteedOhko
+  const shouldStay = winningNow || !switchSuggestion
+  const pct = (n: number) => Math.round(n)
+
   let headline: string
   let strategyLine: string
 
-  if (switchSuggestion) {
-    const disadvantage =
+  if (!shouldStay && switchSuggestion) {
+    // A benched Pokémon is clearly better — recommend the switch, graded by how
+    // bad the current matchup is.
+    const sug = switchSuggestion
+    const graded =
       myOffEff === 0
         ? `${attacker.name} can't damage ${defender.name}`
-        : myOffEff < 1
-          ? `${attacker.name}'s attacks are resisted here`
+        : threatenedOhko && !outspeed
+          ? `${attacker.name} is in KO range from ${incomingThreat?.move.name}`
           : myDefEff > 1
             ? `${attacker.name} is weak to ${defender.name}`
-            : threatenedOhko
-              ? `${attacker.name} risks being knocked out`
-              : `a benched Pokémon has a stronger type matchup`
-    headline = `Switch to ${switchSuggestion.name}`
-    strategyLine = `Switch out — ${disadvantage}. ${switchSuggestion.reason}.`
+            : myOffEff < 1
+              ? `${attacker.name}'s hits are resisted here`
+              : `a stronger matchup is on the bench`
+    const serviceable = !threatenedOhko && myOffEff >= 1 && (bestMove?.expectedPercent ?? 0) >= 30
+    if (serviceable) {
+      headline = `Switch to ${sug.name} (upgrade)`
+      strategyLine = `${attacker.name} can fight here, but ${sug.name} is the stronger answer: ${sug.reason}.`
+    } else {
+      headline = `Switch to ${sug.name}`
+      strategyLine = `Switch out — ${graded}. ${sug.name} is the answer: ${sug.reason}.`
+    }
   } else if (!bestMove) {
-    headline = 'Use a status move or stall'
-    strategyLine = `${attacker.name} can't deal damage and no better switch is on the bench — use a status move or stall.`
-  } else if (canOhko && outspeed) {
-    headline = `Attack with ${bestMove.move.name}`
-    strategyLine = `Stay in — you outspeed and ${bestMove.move.name} should KO before ${defender.name} can act.`
-  } else if (canOhko && threatenedOhko && !outspeed) {
-    headline = `Risky race with ${bestMove.move.name}`
-    strategyLine = `Close race — ${bestMove.move.name} can KO, but ${defender.name} moves first and can KO you. No safer switch is available, so weigh the risk.`
-  } else if (threatenedOhko && !outspeed) {
-    headline = `Attack with ${bestMove.move.name} under pressure`
-    strategyLine = `${defender.name} moves first and can KO you — hit hard with ${bestMove.move.name} or take a defensive switch if you have one.`
+    // Best available Pokémon, but it can't actually damage the opponent.
+    headline = crippleMove ? `${crippleMove.name} to stall` : recoveryMove ? `Stall with ${recoveryMove.name}` : 'Stall or pivot'
+    strategyLine = `${attacker.name} can't hurt ${defender.name}, and it's still your best option. ${
+      crippleMove
+        ? `Use ${crippleMove.name} to ${statusEffect(moveSlug(crippleMove))} and chip away`
+        : recoveryMove
+          ? `Stall with ${recoveryMove.name} and wait it out`
+          : pivotMove
+            ? `Use ${pivotMove.name} to pivot toward a counter`
+            : 'Use a status move or pivot to make progress'
+    }.`
   } else {
-    headline = `Attack with ${bestMove.move.name}`
-    strategyLine = `Stay in and attack with ${bestMove.move.name} — it's your strongest available play and you're not in KO range.`
+    const min = pct(bestMove.minPercent)
+    const max = pct(bestMove.maxPercent)
+    const acc = bestMove.move.accuracy ?? 100
+    const shaky = acc < 90
+    const priorityKOs =
+      !!priorityMove && (priorityMove.ko === 'Guaranteed OHKO' || priorityMove.ko === 'Possible OHKO')
+    const setupSafe = !!setupMove && !threatenedOhko && !theyTwoHKO && !guaranteedOhko
+
+    if (guaranteedOhko && outspeed) {
+      headline = `KO with ${bestMove.move.name}`
+      strategyLine = `Clean kill — you outspeed and ${bestMove.move.name} is a guaranteed OHKO (~${min}–${max}%).${shaky ? ` Just mind the ${acc}% accuracy.` : ''}`
+    } else if (canOhko && outspeed) {
+      headline = `Likely KO with ${bestMove.move.name}`
+      strategyLine = `${bestMove.move.name} can OHKO (~${min}–${max}%) and you move first — likely a kill, but it's a damage roll. You still outspeed if it lives${threatenedOhko ? `, though it would KO back, so keep a follow-up ready` : ''}.`
+    } else if (canOhko && !outspeed && threatenedOhko) {
+      if (priorityKOs && priorityMove) {
+        headline = `Finish with ${priorityMove.move.name}`
+        strategyLine = `You lose the speed race, but ${priorityMove.move.name} has priority and can KO first (~${pct(priorityMove.minPercent)}–${pct(priorityMove.maxPercent)}%).`
+      } else {
+        headline = `Risky race with ${bestMove.move.name}`
+        strategyLine = `${defender.name} outspeeds and can OHKO you, and your KO won't strike first. This is still your best matchup — gamble on ${bestMove.move.name}${shaky ? ` (~${acc}% acc)` : ''}, or sacrifice a chip to bring ${attacker.name} back in safely.`
+      }
+    } else if (canOhko && !outspeed) {
+      headline = `Attack with ${bestMove.move.name}`
+      strategyLine = `You OHKO ${defender.name}. It's faster, but its ${incomingThreat?.move.name ?? 'attack'} only does ~${pct(risk)}%, so you take one hit and KO.`
+    } else if (setupSafe && setupMove) {
+      headline = `Set up with ${setupMove.name}`
+      strategyLine = `${defender.name} can't 2HKO you (${incomingThreat ? `${incomingThreat.move.name} ~${pct(risk)}%` : 'minimal chip'}), so boost with ${setupMove.name}, then sweep with ${bestMove.move.name} at +power.`
+    } else if (!outspeed && crippleMove && !threatenedOhko) {
+      headline = `${crippleMove.name} to flip momentum`
+      strategyLine = `${defender.name} outspeeds you — lead with ${crippleMove.name} to ${statusEffect(moveSlug(crippleMove))}, then attack with ${bestMove.move.name}.`
+    } else if (recoveryMove && myDefEff < 1) {
+      headline = `Stall with ${recoveryMove.name}`
+      strategyLine = `You resist ${defender.name} (~${pct(risk)}% per hit). Chip with ${bestMove.move.name} and heal with ${recoveryMove.name} to grind it down safely.`
+    } else if (twoHKO && outspeed) {
+      headline = `2HKO with ${bestMove.move.name}`
+      strategyLine = `${bestMove.move.name} 2HKOs (~${min}–${max}% each) and you outspeed, so KO over two turns${incomingThreat ? `, surviving ${incomingThreat.move.name} (~${pct(risk)}%) in between` : ''}.`
+    } else if (threatenedOhko && !outspeed) {
+      headline = priorityMove ? `Chip with ${priorityMove.move.name}` : `Attack with ${bestMove.move.name}`
+      strategyLine = `${defender.name} moves first and can KO you, and it's still your best matchup. ${
+        priorityMove ? `Get in priority ${priorityMove.move.name} damage` : `Deal what you can with ${bestMove.move.name}`
+      }${hazardMove ? ` or set ${hazardMove.name} before going down` : ''} — or sacrifice to bring in a counter.`
+    } else if (bestMove.expectedPercent < 12 && risk < 15) {
+      headline = hazardMove ? `Set ${hazardMove.name}` : crippleMove ? `${crippleMove.name}` : pivotMove ? `Pivot with ${pivotMove.name}` : 'Break the stall'
+      strategyLine = `Neither of you does much (you ~${pct(bestMove.expectedPercent)}%, them ~${pct(risk)}%). ${
+        hazardMove
+          ? `Set ${hazardMove.name} to punish switches`
+          : crippleMove
+            ? `Use ${crippleMove.name} to ${statusEffect(moveSlug(crippleMove))}`
+            : pivotMove
+              ? `Pivot with ${pivotMove.name}`
+              : 'Use status or pivot'
+      } to make progress.`
+    } else {
+      headline = `Attack with ${bestMove.move.name}`
+      strategyLine = `Stay in — ${bestMove.move.name} is your best play (~${min}–${max}%, ${bestMove.ko.toLowerCase()}) and you're not in KO range.${shaky ? ` Mind the ${acc}% accuracy.` : ''}`
+    }
   }
 
   // Multi-stage game plan — the concrete turn-by-turn sequence to execute.
@@ -350,7 +425,7 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
   const survivesAHit = !threatenedOhko
   const safeThreat = incomingThreat ? `${incomingThreat.move.name} (~${Math.round(risk)}%)` : 'its attack'
 
-  if (switchSuggestion) {
+  if (!shouldStay && switchSuggestion) {
     // Pivot plan: soak the hit with your best wall, then bring in your best attacker.
     const wall = bestDefensiveSwitch
     const sweeper = bestOffensiveSwitch
