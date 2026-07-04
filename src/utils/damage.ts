@@ -90,6 +90,22 @@ export interface SwitchSuggestion {
   reason: string
 }
 
+// A ranked "who to switch to" candidate.
+export interface SwitchOption {
+  name: string
+  verdict: string
+  offense: number
+  risk: number
+  outspeed: boolean
+  reason: string
+}
+
+// A situational tactic the current Pokémon can use (setup, status, pivot, …).
+export interface TacticalOption {
+  label: string
+  text: string
+}
+
 export interface BattleAdvice {
   fasterSide: 'you' | 'opponent' | 'tie'
   yourSpeed: number
@@ -98,11 +114,51 @@ export interface BattleAdvice {
   bestMove: MoveAnalysis | null
   incomingThreat: MoveAnalysis | null
   switchSuggestion: SwitchSuggestion | null
+  switchOptions: SwitchOption[]
+  gamePlan: string[] // multi-stage / turn-by-turn plan
+  tacticalOptions: TacticalOption[]
   headline: string
   speedLine: string
   bestMoveLine: string
   strategyLine: string
   threatLine: string
+}
+
+// Gen IV move classifications used to surface tactical options. Keyed by API slug.
+const OFFENSE_SETUP = new Set([
+  'swords-dance', 'dragon-dance', 'nasty-plot', 'calm-mind', 'bulk-up', 'agility',
+  'rock-polish', 'growth', 'belly-drum', 'tail-glow', 'meditate', 'sharpen', 'howl', 'curse',
+])
+const CRIPPLE_STATUS = new Set([
+  'thunder-wave', 'will-o-wisp', 'toxic', 'spore', 'sleep-powder', 'hypnosis', 'sing',
+  'grass-whistle', 'lovely-kiss', 'stun-spore', 'glare', 'yawn', 'confuse-ray',
+  'poison-powder', 'leech-seed',
+])
+const HAZARDS = new Set(['stealth-rock', 'spikes', 'toxic-spikes'])
+const RECOVERY = new Set([
+  'recover', 'roost', 'rest', 'soft-boiled', 'moonlight', 'morning-sun', 'synthesis',
+  'slack-off', 'milk-drink', 'wish', 'heal-order', 'aqua-ring', 'ingrain',
+])
+const PIVOT = new Set(['u-turn', 'baton-pass'])
+
+function moveSlug(move: Move): string {
+  return move.slug ?? move.name.toLowerCase().replace(/\s+/g, '-')
+}
+
+function findMove(attacker: Pokemon, set: Set<string>): Move | undefined {
+  return attacker.moves.find((move) => set.has(moveSlug(move)))
+}
+
+// Short verb describing what a crippling status move does, for plan text.
+function statusEffect(slug: string): string {
+  if (['thunder-wave', 'stun-spore', 'glare'].includes(slug)) return 'paralyze it (and likely outspeed)'
+  if (slug === 'will-o-wisp') return 'burn it (halving its physical damage)'
+  if (slug === 'toxic') return 'badly poison it'
+  if (['spore', 'sleep-powder', 'hypnosis', 'sing', 'grass-whistle', 'lovely-kiss'].includes(slug)) return 'put it to sleep'
+  if (slug === 'leech-seed') return 'sap its HP each turn'
+  if (slug === 'confuse-ray') return 'confuse it'
+  if (slug === 'yawn') return 'force it to sleep or switch'
+  return 'cripple it'
 }
 
 // Score a matchup. Raw damage/risk plus explicit bonuses for a type advantage
@@ -146,51 +202,95 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
   const myDefEff = incomingThreat?.effectiveness ?? 1
   const currentScore = matchupScore(bestMove?.expectedPercent ?? 0, risk, outspeed, myOffEff, myDefEff)
 
-  // Look for a party member with a clearly better matchup — a type advantage
-  // (super-effective offense and/or resisting the opponent) is weighted heavily.
-  let switchSuggestion: SwitchSuggestion | null = null
-  let bestAlt = currentScore + 15 // require a meaningful margin to recommend a swap
-  for (const mate of party) {
-    if (mate.id === attacker.id) continue
-    const mateBest = bestDamagingMove(mate, defender)
-    const oppVsMate = bestDamagingMove(defender, mate)
-    const mateOffense = mateBest?.expectedPercent ?? 0
-    const mateRisk = oppVsMate?.expectedPercent ?? 0
-    const mateOffEff = mateBest?.effectiveness ?? 0
-    const mateDefEff = oppVsMate?.effectiveness ?? 1
-    const mateOutspeed = mate.stats.speed > opponentSpeed
-    const score = matchupScore(mateOffense, mateRisk, mateOutspeed, mateOffEff, mateDefEff)
-    if (score > bestAlt) {
-      bestAlt = score
+  // Rank every benched Pokémon as a switch-in. A type advantage (super-effective
+  // offense and/or resisting the opponent) is weighted heavily.
+  const alternatives = party
+    .filter((mate) => mate.id !== attacker.id)
+    .map((mate) => {
+      const mateBest = bestDamagingMove(mate, defender)
+      const oppVsMate = bestDamagingMove(defender, mate)
+      const offense = mateBest?.expectedPercent ?? 0
+      const risk = oppVsMate?.expectedPercent ?? 0
+      const offEff = mateBest?.effectiveness ?? 0
+      const defEff = oppVsMate?.effectiveness ?? 1
+      const outspeed = mate.stats.speed > opponentSpeed
+      const score = matchupScore(offense, risk, outspeed, offEff, defEff)
 
-      // Explain the type advantage in plain terms.
       const offPart = mateBest
-        ? mateOffEff > 1
-          ? `${mate.name}'s ${mateBest.move.name} is ${effWord(mateOffEff)} (~${Math.round(mateOffense)}%)`
-          : `${mate.name} hits for ~${Math.round(mateOffense)}% with ${mateBest.move.name}`
-        : `${mate.name} is a better fit`
+        ? offEff > 1
+          ? `${mate.name}'s ${mateBest.move.name} is ${effWord(offEff)} (~${Math.round(offense)}%)`
+          : `${mate.name} hits for ~${Math.round(offense)}% with ${mateBest.move.name}`
+        : `${mate.name} is a decent fit`
       const defPart =
-        mateDefEff === 0
-          ? `, and is immune to ${defender.name}'s best move`
-          : mateDefEff < 1
-            ? `, and resists it (only ~${Math.round(mateRisk)}% taken)`
-            : `, taking ~${Math.round(mateRisk)}% back`
-      const speedPart = mateOutspeed ? ', and outspeeds' : ''
+        defEff === 0
+          ? `, immune to ${defender.name}'s best move`
+          : defEff < 1
+            ? `, resists it (~${Math.round(risk)}% taken)`
+            : `, takes ~${Math.round(risk)}% back`
+      const speedPart = outspeed ? ', outspeeds' : ''
 
-      switchSuggestion = {
-        name: mate.name,
-        offense: mateOffense,
-        risk: mateRisk,
-        offensiveEff: mateOffEff,
-        defensiveEff: mateDefEff,
-        outspeed: mateOutspeed,
-        reason: `${offPart}${defPart}${speedPart}`,
-      }
-    }
-  }
+      const verdict =
+        offEff > 1 && defEff < 1
+          ? 'Ideal counter'
+          : defEff === 0
+            ? 'Immune wall'
+            : offEff > 1 && outspeed
+              ? 'Fast attacker'
+              : offEff > 1
+                ? 'Offensive answer'
+                : defEff < 1
+                  ? 'Defensive pivot'
+                  : risk > 60
+                    ? 'Risky'
+                    : 'Even matchup'
+
+      return { mate, name: mate.name, offense, risk, offEff, defEff, outspeed, score, mateBest, verdict, reason: `${offPart}${defPart}${speedPart}` }
+    })
+    .sort((a, b) => b.score - a.score)
+
+  // Only surface benched mons that actually help (better than staying, or a real
+  // type edge). Cap at three so the UI stays scannable.
+  const switchOptions: SwitchOption[] = alternatives
+    .filter((alt) => alt.score > currentScore - 5 || alt.offEff > 1 || alt.defEff < 1)
+    .slice(0, 3)
+    .map((alt) => ({
+      name: alt.name,
+      verdict: alt.verdict,
+      offense: alt.offense,
+      risk: alt.risk,
+      outspeed: alt.outspeed,
+      // Drop the leading name since the card already shows it as a heading.
+      reason: alt.reason.replace(new RegExp(`^${alt.name}('s)? ?`), ''),
+    }))
+
+  const top = alternatives[0]
+  const switchSuggestion: SwitchSuggestion | null =
+    top && top.score > currentScore + 15
+      ? {
+          name: top.name,
+          offense: top.offense,
+          risk: top.risk,
+          offensiveEff: top.offEff,
+          defensiveEff: top.defEff,
+          outspeed: top.outspeed,
+          reason: top.reason,
+        }
+      : null
 
   const canOhko = bestMove?.ko === 'Guaranteed OHKO' || bestMove?.ko === 'Possible OHKO'
   const threatenedOhko = incomingThreat?.ko === 'Guaranteed OHKO' || incomingThreat?.ko === 'Possible OHKO'
+
+  // Best defensive pivot (takes least) and best offensive answer (hits hardest).
+  const bestDefensiveSwitch = [...alternatives].sort((a, b) => a.risk - b.risk)[0]
+  const bestOffensiveSwitch = [...alternatives].sort((a, b) => b.offense - a.offense)[0]
+
+  // Classify the current Pokémon's own toolkit for tactical options.
+  const setupMove = findMove(attacker, OFFENSE_SETUP)
+  const crippleMove = findMove(attacker, CRIPPLE_STATUS)
+  const hazardMove = findMove(attacker, HAZARDS)
+  const recoveryMove = findMove(attacker, RECOVERY)
+  const pivotMove = findMove(attacker, PIVOT)
+  const priorityMove = moves.find((m) => m.maxDamage > 0 && m.move.priority > 0) ?? null
 
   const speedLine =
     fasterSide === 'you'
@@ -245,6 +345,91 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
     strategyLine = `Stay in and attack with ${bestMove.move.name} — it's your strongest available play and you're not in KO range.`
   }
 
+  // Multi-stage game plan — the concrete turn-by-turn sequence to execute.
+  const gamePlan: string[] = []
+  const survivesAHit = !threatenedOhko
+  const safeThreat = incomingThreat ? `${incomingThreat.move.name} (~${Math.round(risk)}%)` : 'its attack'
+
+  if (switchSuggestion) {
+    // Pivot plan: soak the hit with your best wall, then bring in your best attacker.
+    const wall = bestDefensiveSwitch
+    const sweeper = bestOffensiveSwitch
+    if (wall && sweeper && wall.name !== sweeper.name && wall.defEff < 1) {
+      gamePlan.push(`Turn 1: switch to ${wall.name} to absorb ${safeThreat}.`)
+      gamePlan.push(`Turn 2: pivot to ${sweeper.name} and attack with ${sweeper.mateBest?.move.name ?? 'its best move'} (~${Math.round(sweeper.offense)}%).`)
+    } else {
+      gamePlan.push(`Turn 1: switch to ${switchSuggestion.name} (${top.verdict.toLowerCase()}).`)
+      if (top?.mateBest) gamePlan.push(`Turn 2: attack with ${top.mateBest.move.name} (~${Math.round(top.offense)}%).`)
+    }
+  } else if (setupMove && survivesAHit && bestMove && !canOhko) {
+    gamePlan.push(`Turn 1: set up with ${setupMove.name} — ${defender.name} only does ${safeThreat}, so you can afford it.`)
+    gamePlan.push(`Turn 2+: sweep with ${bestMove.move.name} at boosted power.`)
+  } else if (!outspeed && crippleMove && bestMove) {
+    gamePlan.push(`Turn 1: ${crippleMove.name} to ${statusEffect(moveSlug(crippleMove))}.`)
+    gamePlan.push(`Turn 2+: attack with ${bestMove.move.name} with the momentum flipped.`)
+  } else if (outspeed && bestMove?.ko === 'Guaranteed 2HKO' && survivesAHit) {
+    gamePlan.push(`Turn 1: ${bestMove.move.name} (~${Math.round(bestMove.expectedPercent)}%).`)
+    gamePlan.push(`Turn 2: ${bestMove.move.name} again to KO — you outspeed and survive ${safeThreat} between hits.`)
+  } else if (canOhko && outspeed && bestMove) {
+    gamePlan.push(`Turn 1: ${bestMove.move.name} — you outspeed and should KO before ${defender.name} acts.`)
+  } else if (threatenedOhko && !outspeed && bestMove) {
+    if (priorityMove) {
+      gamePlan.push(`Turn 1: ${priorityMove.move.name} strikes first (priority) for ~${Math.round(priorityMove.expectedPercent)}%.`)
+      gamePlan.push('If it doesn’t KO, switch to a safer matchup next turn.')
+    } else {
+      gamePlan.push(`Turn 1: ${bestMove.move.name} and hope to KO — otherwise ${defender.name} KOs you back.`)
+      if (bestDefensiveSwitch && bestDefensiveSwitch.defEff < 1) {
+        gamePlan.push(`Safer line: switch to ${bestDefensiveSwitch.name} to absorb ${safeThreat} first.`)
+      }
+    }
+  } else if (bestMove) {
+    gamePlan.push(`Turn 1+: keep attacking with ${bestMove.move.name} — you're not in KO range.`)
+    if (bestMove.ko === 'Guaranteed 2HKO' || bestMove.ko === '3+ hits') {
+      gamePlan.push(`Watch your HP; ${defender.name} chips ~${Math.round(risk)}% per turn.`)
+    }
+  } else {
+    gamePlan.push('No damage available — pivot out or use a status move to make progress.')
+  }
+
+  // Situational tactical menu — the "other options" beyond the main plan.
+  const tacticalOptions: TacticalOption[] = []
+  if (!outspeed && priorityMove) {
+    tacticalOptions.push({
+      label: 'Strike first',
+      text: `${priorityMove.move.name} has priority — it hits before ${defender.name} even though you're slower.`,
+    })
+  }
+  if (setupMove && survivesAHit) {
+    tacticalOptions.push({
+      label: 'Set up',
+      text: `${setupMove.name} boosts you; ${defender.name} only does ${safeThreat}, so there's room to power up.`,
+    })
+  }
+  if (crippleMove) {
+    tacticalOptions.push({
+      label: 'Cripple',
+      text: `${crippleMove.name} can ${statusEffect(moveSlug(crippleMove))} to blunt ${defender.name}.`,
+    })
+  }
+  if (hazardMove) {
+    tacticalOptions.push({
+      label: 'Hazards',
+      text: `${hazardMove.name} chips their team every time a Pokémon switches in.`,
+    })
+  }
+  if (recoveryMove && myDefEff < 1) {
+    tacticalOptions.push({
+      label: 'Stall',
+      text: `You resist ${defender.name}, so ${recoveryMove.name} lets you outlast it.`,
+    })
+  }
+  if (pivotMove) {
+    tacticalOptions.push({
+      label: 'Pivot',
+      text: `${pivotMove.name} lets you ${pivotMove.name === 'Baton Pass' ? 'pass boosts and ' : 'deal damage and '}switch to a better matchup.`,
+    })
+  }
+
   return {
     fasterSide,
     yourSpeed,
@@ -253,6 +438,9 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
     bestMove,
     incomingThreat,
     switchSuggestion,
+    switchOptions,
+    gamePlan,
+    tacticalOptions,
     headline,
     speedLine,
     bestMoveLine,

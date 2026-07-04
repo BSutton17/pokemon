@@ -781,6 +781,48 @@ function CombatView({
             <p>{advice.threatLine}</p>
           </div>
         </div>
+
+        {advice.gamePlan.length > 0 ? (
+          <div className="plan-block">
+            <p className="block-title">Game plan</p>
+            <ol className="plan-steps">
+              {advice.gamePlan.map((step, index) => (
+                <li key={index}>{step}</li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
+
+        {advice.switchOptions.length > 0 ? (
+          <div className="plan-block">
+            <p className="block-title">Who to switch to</p>
+            <div className="switch-options">
+              {advice.switchOptions.map((option) => (
+                <div className="switch-option" key={option.name}>
+                  <div className="switch-top">
+                    <strong>{option.name}</strong>
+                    <span className="switch-verdict">{option.verdict}</span>
+                  </div>
+                  <p className="switch-reason">{option.reason}.</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {advice.tacticalOptions.length > 0 ? (
+          <div className="plan-block">
+            <p className="block-title">Other options</p>
+            <ul className="tactic-list">
+              {advice.tacticalOptions.map((option) => (
+                <li key={option.label}>
+                  <span className="tactic-label">{option.label}</span>
+                  <span>{option.text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </section>
 
       <section className="panel">
