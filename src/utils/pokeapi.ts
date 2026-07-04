@@ -181,6 +181,13 @@ function gen4LevelUpDetail(refs: RawMoveRef['version_group_details']) {
   return candidates[0]
 }
 
+interface RawPastValue {
+  power: number | null
+  accuracy: number | null
+  type: { name: string } | null
+  version_group: { name: string }
+}
+
 interface RawMoveDetail {
   name: string
   type: { name: string }
@@ -191,6 +198,34 @@ interface RawMoveDetail {
   effect_chance: number | null
   effect_entries: { short_effect: string; language: { name: string } }[]
   flavor_text_entries: { flavor_text: string; language: { name: string }; version_group: { name: string } }[]
+  past_values: RawPastValue[]
+}
+
+// Version group -> generation number, for resolving era-specific move stats.
+const VERSION_GROUP_GEN: Record<string, number> = {
+  'red-blue': 1, yellow: 1,
+  'gold-silver': 2, crystal: 2,
+  'ruby-sapphire': 3, emerald: 3, 'firered-leafgreen': 3, colosseum: 3, xd: 3,
+  'diamond-pearl': 4, platinum: 4, 'heartgold-soulsilver': 4,
+  'black-white': 5, 'black-2-white-2': 5,
+  'x-y': 6, 'omega-ruby-alpha-sapphire': 6,
+  'sun-moon': 7, 'ultra-sun-ultra-moon': 7, 'lets-go-pikachu-lets-go-eevee': 7,
+  'sword-shield': 8, 'brilliant-diamond-and-shining-pearl': 8, 'legends-arceus': 8,
+  'scarlet-violet': 9,
+}
+const TARGET_GEN = 4
+
+// Many moves changed power/accuracy/type across generations (e.g. Knock Off was
+// 20 power in Gen IV, 65 today). A past_value records the value in effect for the
+// generations *before* its version group, so the Gen IV value is the earliest
+// recorded change from a later generation, or the current value if none apply.
+function gen4Value<T>(current: T, past: RawPastValue[], pick: (p: RawPastValue) => T | null | undefined): T {
+  const changes = past
+    .map((p) => ({ gen: VERSION_GROUP_GEN[p.version_group.name] ?? 99, value: pick(p) }))
+    .filter((c) => c.value !== null && c.value !== undefined)
+    .sort((a, b) => a.gen - b.gen)
+  const applicable = changes.find((c) => c.gen > TARGET_GEN)
+  return applicable ? (applicable.value as T) : current
 }
 
 // One-sentence description: the Gen IV in-game flavor text or the mechanical
@@ -222,13 +257,22 @@ async function loadMove(url: string, levelLearned: number): Promise<Move> {
   const res = await fetch(url)
   if (!res.ok) throw new Error('Move lookup failed.')
   const data = (await res.json()) as RawMoveDetail
+  const past = data.past_values ?? []
+
+  // Resolve Gen IV-era stats. A recorded power of 1 is PokeAPI's placeholder for
+  // old variable-power moves (e.g. Hidden Power), so ignore it.
+  const gen4Power = gen4Value(data.power, past, (p) => p.power)
+  const power = gen4Power != null && gen4Power <= 1 ? data.power : gen4Power
+  const accuracy = gen4Value(data.accuracy, past, (p) => p.accuracy)
+  const type = gen4Value(data.type.name, past, (p) => p.type?.name)
+
   return {
     name: cap(data.name),
     slug: data.name,
-    type: cap(data.type.name),
+    type: cap(type),
     category: data.damage_class.name,
-    power: data.power,
-    accuracy: data.accuracy,
+    power,
+    accuracy,
     priority: data.priority,
     levelLearned,
     description: moveDescription(data),
