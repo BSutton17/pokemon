@@ -677,7 +677,12 @@ function App() {
 
 function MoveRow({ analysis }: { analysis: MoveAnalysis }) {
   const { move } = analysis
-  const isStatus = move.category === 'status' || !move.power
+  const isStatus = move.category === 'status'
+  // A damaging move with null power is a fixed-damage move (e.g. Dragon Rage).
+  const powerText = isStatus ? 'Status' : (move.power ?? 'Fixed')
+  const min = Math.round(analysis.minPercent)
+  const max = Math.round(analysis.maxPercent)
+  const damageText = analysis.maxDamage <= 0 ? '—' : min === max ? `${min}%` : `${min}–${max}%`
   return (
     <>
       <tr className={move.description ? 'has-desc' : ''}>
@@ -688,12 +693,10 @@ function MoveRow({ analysis }: { analysis: MoveAnalysis }) {
             {analysis.stab ? <span className="tag">STAB</span> : null}
           </div>
         </td>
-        <td className="mono">{isStatus ? 'Status' : `${move.power}`}</td>
+        <td className="mono">{powerText}</td>
         <td className="mono">{move.accuracy ?? '—'}</td>
         <td className={effClass(analysis.effectiveness)}>{effectivenessLabel(analysis.effectiveness)}</td>
-        <td className="mono">
-          {isStatus ? '—' : `${Math.round(analysis.minPercent)}–${Math.round(analysis.maxPercent)}%`}
-        </td>
+        <td className="mono">{damageText}</td>
         <td>
           <span className={`ko ${analysis.ko === 'No damage' ? 'eff-none' : ''}`}>{analysis.ko}</span>
         </td>

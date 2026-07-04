@@ -27,7 +27,35 @@ export interface MoveAnalysis {
   ko: KoVerdict
 }
 
+// Fixed-damage moves ignore stats and type effectiveness (except immunity),
+// dealing a set amount. PokeAPI reports these with power: null, so they must be
+// handled explicitly or they'd read as 0 damage. Returns null for normal moves.
+function fixedDamage(move: Move, attacker: Pokemon, defender: Pokemon): number | null {
+  switch (move.slug ?? move.name.toLowerCase().replace(/\s+/g, '-')) {
+    case 'dragon-rage':
+      return 40
+    case 'sonic-boom':
+      return 20
+    case 'seismic-toss':
+    case 'night-shade':
+      return attacker.level // deals damage equal to the user's level
+    case 'psywave':
+      return attacker.level // 0.5–1.5× level; use the average
+    case 'super-fang':
+      return Math.max(1, Math.floor(defender.stats.hp / 2)) // ~half the target's HP
+    default:
+      return null
+  }
+}
+
 function damageSpread(attacker: Pokemon, defender: Pokemon, move: Move): { min: number; max: number } {
+  // Fixed-damage moves: flat amount unless the target is immune by type.
+  const fixed = fixedDamage(move, attacker, defender)
+  if (fixed != null) {
+    if (typeEffectiveness(move.type, defender.types) === 0) return { min: 0, max: 0 }
+    return { min: fixed, max: fixed }
+  }
+
   if (move.category === 'status' || !move.power) return { min: 0, max: 0 }
 
   const level = attacker.level
@@ -159,6 +187,13 @@ function statusEffect(slug: string): string {
   if (slug === 'confuse-ray') return 'confuse it'
   if (slug === 'yawn') return 'force it to sleep or switch'
   return 'cripple it'
+}
+
+// Collapse a damage % spread to a single value when the roll is fixed.
+function rangePct(minPct: number, maxPct: number): string {
+  const a = Math.round(minPct)
+  const b = Math.round(maxPct)
+  return a === b ? `${a}%` : `${a}–${b}%`
 }
 
 // Score a matchup. Raw damage/risk plus explicit bonuses for a type advantage
@@ -303,15 +338,15 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
         : `Speed tie at ${yourSpeed} — 50/50 who moves first.`
 
   const bestMoveLine = bestMove
-    ? `${bestMove.move.name}: ~${Math.round(bestMove.minPercent)}–${Math.round(bestMove.maxPercent)}% (${effWord(
+    ? `${bestMove.move.name}: ~${rangePct(bestMove.minPercent, bestMove.maxPercent)} (${effWord(
         bestMove.effectiveness,
       )}${bestMove.stab ? ', STAB' : ''}) → ${bestMove.ko}.`
     : `No damaging move lands on ${defender.name}.`
 
   const threatLine = incomingThreat
-    ? `${incomingThreat.move.name}: ~${Math.round(incomingThreat.minPercent)}–${Math.round(
-        incomingThreat.maxPercent,
-      )}% (${effWord(incomingThreat.effectiveness)}) → ${incomingThreat.ko} on you.`
+    ? `${incomingThreat.move.name}: ~${rangePct(incomingThreat.minPercent, incomingThreat.maxPercent)} (${effWord(
+        incomingThreat.effectiveness,
+      )}) → ${incomingThreat.ko} on you.`
     : `${defender.name} has no damaging move that lands on you.`
 
   // Decide whether the active Pokémon is actually the play. Only stay in if it's
@@ -361,8 +396,7 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
             : 'Use a status move or pivot to make progress'
     }.`
   } else {
-    const min = pct(bestMove.minPercent)
-    const max = pct(bestMove.maxPercent)
+    const dmg = rangePct(bestMove.minPercent, bestMove.maxPercent)
     const acc = bestMove.move.accuracy ?? 100
     const shaky = acc < 90
     const priorityKOs =
@@ -371,10 +405,10 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
 
     if (guaranteedOhko && outspeed) {
       headline = `KO with ${bestMove.move.name}`
-      strategyLine = `Clean kill — you outspeed and ${bestMove.move.name} is a guaranteed OHKO (~${min}–${max}%).${shaky ? ` Just mind the ${acc}% accuracy.` : ''}`
+      strategyLine = `Clean kill — you outspeed and ${bestMove.move.name} is a guaranteed OHKO (~${dmg}).${shaky ? ` Just mind the ${acc}% accuracy.` : ''}`
     } else if (canOhko && outspeed) {
       headline = `Likely KO with ${bestMove.move.name}`
-      strategyLine = `${bestMove.move.name} can OHKO (~${min}–${max}%) and you move first — likely a kill, but it's a damage roll. You still outspeed if it lives${threatenedOhko ? `, though it would KO back, so keep a follow-up ready` : ''}.`
+      strategyLine = `${bestMove.move.name} can OHKO (~${dmg}) and you move first — likely a kill, but it's a damage roll. You still outspeed if it lives${threatenedOhko ? `, though it would KO back, so keep a follow-up ready` : ''}.`
     } else if (canOhko && !outspeed && threatenedOhko) {
       if (priorityKOs && priorityMove) {
         headline = `Finish with ${priorityMove.move.name}`
@@ -397,7 +431,7 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
       strategyLine = `You resist ${defender.name} (~${pct(risk)}% per hit). Chip with ${bestMove.move.name} and heal with ${recoveryMove.name} to grind it down safely.`
     } else if (twoHKO && outspeed) {
       headline = `2HKO with ${bestMove.move.name}`
-      strategyLine = `${bestMove.move.name} 2HKOs (~${min}–${max}% each) and you outspeed, so KO over two turns${incomingThreat ? `, surviving ${incomingThreat.move.name} (~${pct(risk)}%) in between` : ''}.`
+      strategyLine = `${bestMove.move.name} 2HKOs (~${dmg} each) and you outspeed, so KO over two turns${incomingThreat ? `, surviving ${incomingThreat.move.name} (~${pct(risk)}%) in between` : ''}.`
     } else if (threatenedOhko && !outspeed) {
       headline = priorityMove ? `Chip with ${priorityMove.move.name}` : `Attack with ${bestMove.move.name}`
       strategyLine = `${defender.name} moves first and can KO you, and it's still your best matchup. ${
@@ -416,7 +450,7 @@ export function analyzeBattle(attacker: Pokemon, defender: Pokemon, party: Pokem
       } to make progress.`
     } else {
       headline = `Attack with ${bestMove.move.name}`
-      strategyLine = `Stay in — ${bestMove.move.name} is your best play (~${min}–${max}%, ${bestMove.ko.toLowerCase()}) and you're not in KO range.${shaky ? ` Mind the ${acc}% accuracy.` : ''}`
+      strategyLine = `Stay in — ${bestMove.move.name} is your best play (~${dmg}, ${bestMove.ko.toLowerCase()}) and you're not in KO range.${shaky ? ` Mind the ${acc}% accuracy.` : ''}`
     }
   }
 
